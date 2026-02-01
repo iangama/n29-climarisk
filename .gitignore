@@ -14,5 +14,8 @@ dist
 *.log
 docker-compose.override.yml
 
+# grafana runtime
+grafana-data
+
 # os
 .DS_Store
