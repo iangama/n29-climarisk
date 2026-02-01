@@ -1,0 +1,15 @@
+{
+  "name": "n29-climarisk-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/worker.js",
+  "scripts": {
+    "start": "node src/worker.js"
+  },
+  "dependencies": {
+    "bullmq": "^5.12.0",
+    "pg": "^8.12.0",
+    "prom-client": "^15.1.3"
+  }
+}

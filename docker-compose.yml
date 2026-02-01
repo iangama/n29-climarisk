@@ -1,0 +1,233 @@
+name: n29-climarisk
+
+networks:
+  n29_net:
+    name: n29_climarisK_net
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  prometheusdata:
+  grafanadata:
+  lokidata:
+
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: n29-climarisk-traefik
+    command:
+      - --log.level=INFO
+      - --accesslog=true
+      - --api.dashboard=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.constraints=Label(`traefik.constraint-label`,`n29-climarisk`)
+      - --entrypoints.web.address=:8880
+      - --entrypoints.websecure.address=:8443
+      - --entrypoints.traefik.address=:8081
+    ports:
+      - "8880:8880"
+      - "8443:8443"
+      - "8081:8081"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      - n29_net
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=n29-climarisk
+      - traefik.http.routers.traefik.rule=PathPrefix(`/`)
+      - traefik.http.routers.traefik.entrypoints=traefik
+      - traefik.http.routers.traefik.service=api@internal
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: n29-climarisk-postgres
+    environment:
+      POSTGRES_DB: climarisk
+      POSTGRES_USER: climarisk
+      POSTGRES_PASSWORD: climarisk
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U climarisk -d climarisk"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - n29_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: n29-climarisk-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - n29_net
+
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: n29-climarisk-api
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://climarisk:climarisk@postgres:5432/climarisk
+      REDIS_URL: redis://redis:6379
+      OWM_API_KEY_FILE: /run/secrets/owm_api_key
+      QUEUE_NAME: climarisk
+    volumes:
+      - ~/.secrets/n29/owm_api_key.txt:/run/secrets/owm_api_key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - n29_net
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=n29-climarisk
+
+      - traefik.http.routers.n29_api.rule=PathPrefix(`/api`)
+      - traefik.http.routers.n29_api.entrypoints=web
+      - traefik.http.routers.n29_api.priority=1000
+      - traefik.http.routers.n29_api.service=n29_api
+      - traefik.http.services.n29_api.loadbalancer.server.port=3000
+
+      - traefik.http.routers.n29_metrics.rule=Path(`/metrics`)
+      - traefik.http.routers.n29_metrics.entrypoints=web
+      - traefik.http.routers.n29_metrics.priority=1000
+      - traefik.http.routers.n29_metrics.service=n29_metrics
+      - traefik.http.services.n29_metrics.loadbalancer.server.port=3000
+
+  worker:
+    build:
+      context: ./services/worker
+      dockerfile: Dockerfile
+    container_name: n29-climarisk-worker
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://climarisk:climarisk@postgres:5432/climarisk
+      REDIS_URL: redis://redis:6379
+      OWM_API_KEY_FILE: /run/secrets/owm_api_key
+      QUEUE_NAME: climarisk
+      LOG_LEVEL: info
+    volumes:
+      - ~/.secrets/n29/owm_api_key.txt:/run/secrets/owm_api_key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - n29_net
+
+  ui:
+    build:
+      context: ./services/ui
+      dockerfile: Dockerfile
+    container_name: n29-climarisk-ui
+    depends_on:
+      - api
+    networks:
+      - n29_net
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=n29-climarisk
+      - traefik.http.routers.n29_ui.rule=PathPrefix(`/`) && !PathPrefix(`/api`) && !Path(`/metrics`)
+      - traefik.http.routers.n29_ui.entrypoints=web
+      - traefik.http.routers.n29_ui.priority=1
+      - traefik.http.routers.n29_ui.service=n29_ui
+      - traefik.http.services.n29_ui.loadbalancer.server.port=8080
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: n29-climarisk-prometheus
+    volumes:
+      - prometheusdata:/prometheus
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    networks:
+      - n29_net
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=n29-climarisk
+      - traefik.http.routers.n29_prom.rule=PathPrefix(`/prometheus`)
+      - traefik.http.routers.n29_prom.entrypoints=web
+      - traefik.http.routers.n29_prom.middlewares=n29_prom_strip
+      - traefik.http.routers.n29_prom.service=n29_prom
+      - traefik.http.middlewares.n29_prom_strip.stripprefix.prefixes=/prometheus
+      - traefik.http.services.n29_prom.loadbalancer.server.port=9090
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: n29-climarisk-loki
+    volumes:
+      - lokidata:/loki
+      - ./infra/loki/loki.yml:/etc/loki/local-config.yaml:ro
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    networks:
+      - n29_net
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=n29-climarisk
+      - traefik.http.routers.n29_loki.rule=PathPrefix(`/loki`)
+      - traefik.http.routers.n29_loki.entrypoints=web
+      - traefik.http.routers.n29_loki.middlewares=n29_loki_strip
+      - traefik.http.routers.n29_loki.service=n29_loki
+      - traefik.http.middlewares.n29_loki_strip.stripprefix.prefixes=/loki
+      - traefik.http.services.n29_loki.loadbalancer.server.port=3100
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: n29-climarisk-promtail
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/promtail/promtail.yml:/etc/promtail/config.yml:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+    networks:
+      - n29_net
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: n29-climarisk-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./infra/grafana/provisioning/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./infra/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - n29_net
+    depends_on:
+      - prometheus
+      - loki
+    labels:
+      - traefik.enable=true
+      - traefik.constraint-label=n29-climarisk
+      - traefik.http.routers.n29_graf.rule=PathPrefix(`/grafana`)
+      - traefik.http.routers.n29_graf.entrypoints=web
+      - traefik.http.routers.n29_graf.middlewares=n29_graf_strip
+      - traefik.http.routers.n29_graf.service=n29_graf
+      - traefik.http.middlewares.n29_graf_strip.stripprefix.prefixes=/grafana
+      - traefik.http.services.n29_graf.loadbalancer.server.port=3000

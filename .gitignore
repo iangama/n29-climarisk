@@ -1,0 +1,18 @@
+# node
+node_modules
+npm-debug.log
+dist
+
+# env / secrets
+.env
+.env.*
+*.secret
+/run/secrets
+.secrets
+
+# docker
+*.log
+docker-compose.override.yml
+
+# os
+.DS_Store

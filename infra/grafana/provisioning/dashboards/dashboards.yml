@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: "n29-climarisk"
+    orgId: 1
+    folder: "N29 ClimaRisk"
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,27 @@
+{
+  "id": null,
+  "uid": "n29climarisk",
+  "title": "N29 ClimaRisk Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "API Requests (http_requests_total)",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 9 },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total[1m]))", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker Jobs (jobs_processed_total)",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 9 },
+      "targets": [
+        { "expr": "sum(rate(jobs_processed_total[1m]))", "refId": "A" }
+      ]
+    }
+  ]
+}
